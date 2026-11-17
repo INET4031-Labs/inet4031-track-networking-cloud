@@ -1,6 +1,19 @@
 # Capstone Track: Networking and Cloud Infrastructure
  
 **Final Sprint | Due before Final Presentations**
+
+> **New to this track? Start here.** The shared [INET 4031 Capstone Guide](https://github.com/INET4031-Labs/inet4031-capstone-guide) explains how to work through any track on your own. Feeling lost in the first few days is normal for a capstone: read the guide's Start Here page, run the Environment Checkpoint below, and take the next small step.
+>
+> | I need... | Go to |
+> |---|---|
+> | A reading order and what to do in my first session | [START-HERE](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/START-HERE.md) |
+> | What to prioritize in Weeks 11 to 14 | [WEEKLY-PLAN](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/WEEKLY-PLAN.md) and the Sprint Timeline below |
+> | Plain-language explanations of this track's concepts | [CONCEPTS](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/CONCEPTS.md) |
+> | A cheat sheet for each tool in this track | [TOOL-GUIDE](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/TOOL-GUIDE.md) |
+> | Which file proves which success criterion | [EVIDENCE-CHECKLIST](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/EVIDENCE-CHECKLIST.md) |
+> | How the Week 13 rebuild works | [REBUILD](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/REBUILD.md) and the Rebuild section below |
+> | Help when something is broken | [GETTING-UNSTUCK](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/GETTING-UNSTUCK.md) |
+> | How to use AI tools well on this project | [USING-AI](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/USING-AI.md) |
  
 ## Overview
  
@@ -39,7 +52,7 @@ How you get there is up to your team.
 - Describe infrastructure in OpenTofu and predict its effect without applying it (RHEL).
 ## Prerequisites
  
-Weeks 2 through 9 should work: the Compose stack, the 3-node k3d cluster with the Flask, Nginx, and database Deployments, the NetworkPolicies (default-deny plus allows), Prometheus in the `monitoring` namespace, and k6.
+Everything from earlier weeks should work: the Compose stack, the 3-node k3d cluster with the Flask, Nginx, and database Deployments, the NetworkPolicies (default-deny plus allows), Prometheus in the `monitoring` namespace, and k6.
  
 ### Environment Checkpoint
  
@@ -129,6 +142,59 @@ These are examples, not requirements. Combine them, change them, or ignore them.
  
 **Approach C: Understand-the-network-first.** Document how names resolve and how a request is routed (Service, endpoints, kube-proxy, CoreDNS), then refine NetworkPolicies so the allowed path is exactly what the scaled-out design needs, testing both allowed and denied connections. Add an OpenTofu description of your scaling objects as **[PREDICT ONLY]** on RHEL. This shows that scaling changes the network picture, not only the pod count.
  
+## Track Tips and Common Trip-Ups
+
+These notes come from where students usually get stuck. They do not change the success criteria; they help you reach them. Concepts are explained in [CONCEPTS](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/CONCEPTS.md) and commands in [TOOL-GUIDE](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/TOOL-GUIDE.md). If a flag here does not work on your installed version, check the tool's `--help`.
+
+**Autoscaling (criterion 1)**
+
+- An HPA measures CPU as a percentage of the pods' CPU **request**. If the Deployment has no CPU request, `kubectl get hpa` shows `<unknown>` and nothing scales. `kubectl describe hpa <name>` explains why.
+- Scale-up takes time (metric interval plus pod start), and scale-down waits several minutes by default. Make your k6 run long enough to see the change and record over time, for example `kubectl get hpa -w | tee capstone/networking-cloud/evidence/hpa-over-time.txt` in its own terminal while k6 runs.
+- Memory arithmetic, as an example: if each Flask pod has a 128Mi limit and the HPA can go from 1 to 4 replicas, the worst case adds 3 x 128Mi = 384Mi. Add every other addition and compare the total to the 768Mi budget.
+
+**Surviving a node failure (criteria 2 and 3)**
+
+- A PodDisruptionBudget limits **voluntary** disruptions, such as a node drain. `docker stop` on a node is an **involuntary** failure, so a PDB will not keep pods alive there. What keeps traffic flowing is having replicas on other nodes plus readiness probes. Criterion 3 asks you to show what actually happened, so record it honestly.
+- Before a drill, run `kubectl get pods -o wide` and note which node each pod is on. The database is not scaled; if it shares the node you stop, decide whether that drill measures what you intended, and write down which node you chose and why.
+- When a node stops, Kubernetes first marks it `NotReady`, which removes its pods from Service endpoints, and only replaces the pods later (by default after several minutes). Timestamp both moments; discussion question 3 asks for them.
+
+**Tracing a request (criterion 4)**
+
+Fill in a path like this one and name every object. Do not guess; find each hop with a command.
+
+| Hop | Object (name) | How you found it |
+|---|---|---|
+| k6 on the VM | `http://localhost:<8090 + N>` | your k6 script |
+| k3d load balancer container | | `docker ps --filter name=k3d-<cluster>-` |
+| Nginx Service and pods | | `kubectl get svc,endpoints` |
+| Flask Service, DNS name, and pods | | `kubectl describe svc <name>`; DNS lookup from a debug pod |
+| Database Service and pod | | |
+| NetworkPolicies allowing each hop | | `kubectl get networkpolicy -o yaml` |
+
+A debug pod needs a memory limit, which `kubectl run` cannot set in current versions. Use a small manifest and delete the pod afterward:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-debug
+  labels:
+    app: dns-debug
+spec:
+  restartPolicy: Never
+  containers:
+    - name: debug
+      image: busybox
+      command: ["sleep", "600"]
+      resources:
+        requests:
+          memory: "16Mi"
+        limits:
+          memory: "64Mi"
+```
+
+Then `kubectl exec dns-debug -- nslookup <service name>` and `kubectl delete pod dns-debug`. Because its label matches no allow policy, this pod is also a ready-made "denied" client for your NetworkPolicy before and after test.
+
 ## Rules of the Road
  
 - **Own cluster and ports only.** Never scan, probe, or load-test anything outside your team's cluster and app. No nmap of the VM or campus network. k6 targets `http://localhost:<8090 + team number>` and nothing else.
@@ -144,6 +210,17 @@ These are examples, not requirements. Combine them, change them, or ignore them.
 - Never disable firewalld or edit `/etc/docker/daemon.json`.
 ## How to Run This Sprint
  
+### Sprint Timeline (Weeks 11 to 14)
+
+Both sections follow the same four weeks. The planning steps below still apply; this table says where your work should be at the end of each week. The full plan is in [WEEKLY-PLAN](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/WEEKLY-PLAN.md).
+
+| Week | By the end of the week |
+|---|---|
+| 11 Kickoff | Environment Checkpoint saved. Baseline recorded before any change (request rate, p95, replica count, memory). `docker ps --filter name=k3d-<cluster>-` output saved. Request path sketched. QA test cases drafted. |
+| 12 Build | Requests and limits, probes, replicas spread across nodes, PodDisruptionBudgets, and a capped HPA in place. First scale-up captured. One practice drill run. Memory arithmetic ready for the mid-sprint check-in. |
+| 13 Consolidate and rebuild | Final 3-minute drill evidence, NetworkPolicy before and after test, request trace in `ARCHITECTURE.md`, RUNBOOK, rebuild, and gap log. |
+| 14 Present | Rebuild presentation (live on the Shared VM, recorded on the Local VM) plus your scale-up and drill evidence. |
+
 ### Shared VM (RHEL, teams)
  
 1. **Sprint planning.** Turn each success criterion into GitHub issues on your project board, including separate issues for baseline measurement, autoscaling, the failure drill, the network analysis, and documentation.
@@ -157,8 +234,26 @@ These are examples, not requirements. Combine them, change them, or ignore them.
 5. **Retrospective** at the end in `docs/final-sprint-retrospective.md`.
 ### Local VM (Ubuntu, individual)
  
-- **Week 1:** baseline measurements, network and DNS analysis, probes and replicas, and your own test cases in `docs/qa-report-final.md`.
-- **Week 2:** autoscaling, failure drill, tightened policy, runbook, architecture diagram, and presentation. A short reflection replaces the retrospective.
+- **Week 11:** baseline measurements, network and DNS analysis, probes and replicas, and your own test cases in `docs/qa-report-final.md`.
+- **Week 12:** autoscaling, failure drill, tightened policy, runbook, and architecture diagram. A short reflection replaces the retrospective.
+- **Week 13:** consolidate your documents, then rebuild on a new VirtualBox VM and keep a gap log (see the Rebuild section).
+- **Week 14:** recorded presentation of your rebuild.
+
+## Rebuild (Weeks 13 and 14)
+
+Your work has to come back up from your repository alone. Start from a clean VM, clone your repo, and follow only your README, RUNBOOK, and scripts. Every step that fails or that your README forgot is a gap: write it in `capstone/networking-cloud/REBUILD-GAPS.md`, fix it by pull request, and update the README. The full contract, the "what lives outside git" checklist, and the gap log template are in [REBUILD](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/REBUILD.md).
+
+> **Shared VM (RHEL, teams):** In Week 13 your team takes a turn in a queue to test the rebuild on a separate VM, which is wiped between teams. In Week 14 you present live: the tools are pre-installed, and your team clones the repo and brings the app up from your README and setup instructions. There is no sudo on the rebuild or presentation VM, so every step your README asks someone to run must work without it. Your Ansible playbooks and any [PREDICT ONLY] code stay reference-only: do not run them, and make sure bringing the app up does not depend on them. Recreate your k3d cluster with the same `--subnet 100.97.<team>.0/24` flag you used before.
+
+> **Local VM (Ubuntu, individual):** In Week 13 create a new VM in VirtualBox using the same steps you used for your original VM, clone your repo, and follow your README. Keep the original VM until the rebuild works. In Week 14 you present a recording of the rebuild.
+
+**Proof of life for this track:** three nodes `Ready`; your HPA and PodDisruptionBudgets exist; `/health` returns 200 on your Kubernetes port; a 60-second k6 run completes.
+
+**Gaps this track usually finds:**
+- The `k3d cluster create` command (with every flag) and the Prometheus helm install were typed by hand in earlier weeks and never committed.
+- k6 scripts or HPA and PDB manifests applied from a local file that was never pushed.
+- The baseline numbers live only in someone's terminal history.
+
 ## Deliverables
  
 - Implementation committed under `capstone/networking-cloud/` in your repo (merged via PR on the RHEL section)
@@ -167,8 +262,10 @@ These are examples, not requirements. Combine them, change them, or ignore them.
 - `capstone/networking-cloud/ARCHITECTURE.md` with an architecture diagram (Mermaid OK) showing VM, cluster, app, and new components
 - A "How to run this" section added to the repo's top-level README so someone who clones the repo can bring the track implementation up
 - `docs/qa-report-final.md` with your own test cases and results
+- `capstone/networking-cloud/REBUILD-GAPS.md`: the gap log from your Week 13 rebuild (template in [REBUILD](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/REBUILD.md))
 - Shared VM: `docs/final-sprint-retrospective.md`; Local VM: a short reflection (a section in the retrospective file named "Individual Reflection")
 - Final presentation/demo: 8-10 minutes for a team on RHEL (CLI-driven: baseline, scale-up under load, node-failure drill with k6 running, network trace); 5 minutes for an individual on Local VM
+- Week 14 rebuild presentation: live on the Shared VM (clone the repo and bring the app up from your README), recorded on the Local VM. See the Rebuild section.
 - Track-specific: `capstone/networking-cloud/evidence/` with saved command output for each success criterion (HPA over time, k6 summaries, drill start and stop times, memory budget arithmetic)
 - Track-specific: the network and service-discovery analysis in `ARCHITECTURE.md`, including one before/after NetworkPolicy test
 - Track-specific: an OpenTofu description of your scaling objects marked **[PREDICT ONLY]** on RHEL, with your written prediction in the Google Doc
@@ -184,3 +281,7 @@ These are examples, not requirements. Combine them, change them, or ignore them.
 ## Getting Help
  
 Clarifications go to the TA or professor. There is no wiki for the capstone tracks.
+
+**Before you ask:** work through [GETTING-UNSTUCK](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/GETTING-UNSTUCK.md) for about 30 minutes, then ask with the command, its full output, what you expected, and what you tried.
+
+**Using AI:** AI assistants are welcome as a tool for learning how these tools work and how enterprises use them. Do not rely on them to produce your work: understand every line you commit, verify AI answers against the tool's documentation, never paste AI output into evidence files, and never paste secrets into an AI tool. See [USING-AI](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/USING-AI.md).
