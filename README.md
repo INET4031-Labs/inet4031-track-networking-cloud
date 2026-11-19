@@ -178,6 +178,14 @@ These are examples, not requirements. Combine them, change them, or ignore them.
 
 These notes come from where students usually get stuck. They do not change the success criteria; they help you reach them. Concepts are explained in [CONCEPTS](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/CONCEPTS.md) and commands in [TOOL-GUIDE](https://github.com/INET4031-Labs/inet4031-capstone-guide/blob/main/TOOL-GUIDE.md). If a flag here does not work on your installed version, check the tool's `--help`.
 
+**Designing your k6 tests (criteria 1 and 2)**
+
+- **Measure the baseline rate first.** Run a short, steady test (a few virtual users for a minute or two) before changing anything. The k6 summary's `http_reqs` line gives requests per second, and `http_req_duration` gives p95. That rate is the "1x" that criterion 1 multiplies by three.
+- **Control the rate, not just the users.** With a fixed number of virtual users, the request rate drops when the app slows down, so "3x" drifts. k6's arrival-rate executors (`constant-arrival-rate` and `ramping-arrival-rate`) hold a request rate you choose, which makes 3x easy to prove. Read the k6 scenarios documentation for your version.
+- **Step, then hold.** A stepped profile (1x, then 2x, then 3x) with each step held for a few minutes gives the HPA time to react and gives you a clear before and after in `hpa-over-time.txt`.
+- **Put the pass/fail in the script.** A threshold such as `http_req_failed: ['rate<0.01']` makes the drill report its own result, so criterion 2's evidence is in the k6 summary.
+- **Commit every script** under `capstone/networking-cloud/k6/` with a comment saying what it tests. On the Shared VM, ramp gently: six teams share the CPU, and an overloaded VM measures your neighbors as much as your app.
+
 **Autoscaling (criterion 1)**
 
 - An HPA measures CPU as a percentage of the pods' CPU **request**. If the Deployment has no CPU request, `kubectl get hpa` shows `<unknown>` and nothing scales. `kubectl describe hpa <name>` explains why.
